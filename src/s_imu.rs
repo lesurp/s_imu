@@ -94,28 +94,30 @@ impl SimIMU {
 
     pub fn sample(&mut self, t: i64) -> Vec<ImuMeasurement> {
         let mut meas = Vec::new();
-        {
-            let mut dt = self.acc_leftover_time;
-            while dt + self.acc_sampling_period <= t {
-                dt += self.acc_sampling_period;
+
+        let mut done = false;
+        let mut acc_dt = self.acc_leftover_time;
+        let mut gyr_dt = self.gyr_leftover_time;
+        while !done {
+            done = true;
+
+            if acc_dt + self.acc_sampling_period <= t {
+                done = false;
+                acc_dt += self.acc_sampling_period;
                 let a = Vector3::new(0.0, 0.0, 9.81);
                 meas.push(ImuMeasurement::Accelerometer(AccelerometerMeasurement {
                     dt: self.acc_sampling_period,
                     a,
                 }));
             }
-            self.acc_leftover_time = dt - t;
-        }
 
-        {
-            let mut dt = self.gyr_leftover_time;
-            while dt + self.gyr_sampling_period <= t {
-                dt += self.gyr_sampling_period;
-                let theta = 0.0_f32;
-                //let theta = self.dist.sample(&mut self.rng);
+            if gyr_dt + self.gyr_sampling_period <= t {
+                done = false;
+                gyr_dt += self.gyr_sampling_period;
+                let theta = self.dist.sample(&mut self.rng);
                 let phi = 2.0 * self.dist.sample(&mut self.rng);
                 // 2pi/3 = 1 turn in 3 seconds
-                let r = 2.0 * std::f32::consts::PI / 3.0;
+                let r = 2.0 * std::f32::consts::PI / 1.0;
                 let w = r * Vector3::new(
                     phi.cos() * theta.sin(),
                     phi.sin() * theta.sin(),
@@ -126,15 +128,9 @@ impl SimIMU {
                     w,
                 }));
             }
-            self.gyr_leftover_time = dt - t;
         }
-
-        /* TODO
-        meas.sort_by_key(|m| match m {
-            ImuMeasurement::Gyroscope(g) => g.dt,
-            ImuMeasurement::Accelerometer(a) => a.dt,
-        });
-        */
+        self.acc_leftover_time = acc_dt - t;
+        self.gyr_leftover_time = gyr_dt - t;
 
         meas
     }

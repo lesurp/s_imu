@@ -1,4 +1,4 @@
-use crate::common::{Local, World, Q};
+use log::{debug, warn};
 use nalgebra::{
     Cholesky, Matrix3, Matrix3x4, Matrix4, Quaternion, UnitQuaternion, Vector3, Vector4,
 };
@@ -15,37 +15,68 @@ pub struct Ekf {
 impl Ekf {
     pub fn new(x: UnitQuaternion<f32>, p: Matrix4<f32>, acc_cov: f32, gyr_cov: f32) -> Ekf {
         let r = acc_cov * Matrix3::identity();
-        let q = Matrix4::from_diagonal(&Vector4::new(1.0, gyr_cov, gyr_cov, gyr_cov));
+        let q = Matrix4::from_diagonal(&Vector4::new(gyr_cov, gyr_cov, gyr_cov, gyr_cov));
         Ekf { x, p, q, r }
     }
 }
 
 impl Filter for Ekf {
     fn process_gyro(&mut self, w: &Vector3<f32>, dt: i64) {
+        debug!("EKF predict");
+        debug!("Gyroscope values:\t{}", w.transpose());
+        debug!("dt:\t\t\t{}", dt);
         let x_vec = Vector4::new(self.x.w, self.x.i, self.x.j, self.x.k);
         let f = Ekf::f(&w, dt);
+        debug!("f:\t\t\t{}", f);
         let x_hat = f * x_vec;
+        debug!("x_n-1_n-1:\t\t\t{}", x_hat);
         self.x =
             UnitQuaternion::from_quaternion(Quaternion::new(x_hat.x, x_hat.y, x_hat.z, x_hat.w));
-        self.p = f * self.p * f.transpose() + self.q;
+        debug!("x_n_n-1:\t\t\t{}", x_hat);
+        debug!("p:\t\t\t{}", self.p);
+        self.p = f * self.p * f.transpose() + 10.0 * self.q;
+        debug!("P_n_n-1:\t\t\t{}", self.p);
+        debug!("norm(P_n_n-1):\t\t\t{}", self.p.norm());
     }
 
+    #[allow(clippy::many_single_char_names)]
     fn process_acc(&mut self, a: &Vector3<f32>, _dt: i64) {
+        debug!("EKF correct");
         let z = 9.81 * a.normalize();
+        debug!("z:\t\t\t{}", z);
         let z_est = self.x.transform_vector(&Vector3::new(0.0, 0.0, 9.81));
+        debug!("H(x_n-n-1):\t\t\t{}", z_est);
         let y = z - z_est;
+        debug!("y:\t\t\t{}", y);
         let dh_dx = Ekf::dqaqc_dq(&self.x, &Vector3::new(0.0, 0.0, 9.81));
-        let s = dh_dx * self.p * dh_dx.transpose() + 100.0 * self.r;
-        let chol = Cholesky::new(s).unwrap();
-        let k = self.p * dh_dx.transpose() * chol.inverse();
+        debug!("dh_dx:\t\t{}", dh_dx);
+        let s = dh_dx * self.p * dh_dx.transpose() + self.r;
+        debug!("s:\t\t\t{}", s);
+        let s_inv = match Cholesky::new(s) {
+            Some(c) => c.inverse(),
+            None => {
+                warn!("s cannot be inverted!?");
+                return;
+            }
+        };
+        debug!("s_inv:\t\t\t{}", s_inv);
+        let k = self.p * dh_dx.transpose();
+        debug!("k:\t\t\t{}", k);
         let correction = k * y;
-        let x_prenorm = self.x.quaternion() + Quaternion::new(correction.x, correction.y, correction.z, correction.w);
+        debug!("correction:\t\t\t{}", correction);
+        let x_prenorm = self.x.quaternion()
+            + Quaternion::new(correction.x, correction.y, correction.z, correction.w);
+        debug!("x_n_n-1:\t\t\t{}", self.x);
         self.x = UnitQuaternion::from_quaternion(x_prenorm);
+        debug!("x_n_n:\t\t\t{}", self.x);
+        debug!("P_n_n-1:\t\t\t{}", self.p);
         self.p = (Matrix4::identity() - k * dh_dx) * self.p;
+        debug!("P_n_n:\t\t\t{}", self.p);
+        debug!("norm(P_n_n):\t\t\t{}", self.p.norm());
     }
 
-    fn state(&self) -> Q<World, Local> {
-        Q::from(self.x)
+    fn state(&self) -> UnitQuaternion<f32> {
+        self.x
     }
 }
 
@@ -55,9 +86,8 @@ impl Ekf {
         let w = x.w;
         let v = x.vector();
         let dqgqc_dw = w * a + v.cross(&a);
-        let dqgqc_dv = v.dot(&a) * Matrix3::identity() + v * a.transpose()
-            - a * v.transpose()
-            - w * a_skewed;
+        let dqgqc_dv =
+            v.dot(&a) * Matrix3::identity() + v * a.transpose() - a * v.transpose() - w * a_skewed;
 
         let mut out = Matrix3x4::zeros();
         out.set_column(0, &dqgqc_dw);
@@ -83,6 +113,7 @@ impl Ekf {
         self.p
     }
 
+    #[allow(clippy::many_single_char_names)]
     fn f(w: &Vector3<f32>, dt: i64) -> Matrix4<f32> {
         let exp_w = 0.5 * (dt as f32 * 1e-6) * w;
         let mut f = Matrix4::identity();

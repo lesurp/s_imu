@@ -1,36 +1,46 @@
 use ekf::Ekf;
 use filter::{Filter, NaiveIntegrationFilter};
 use kiss3d::nalgebra::Vector3;
+use log::info;
 use nalgebra::{Matrix4, UnitQuaternion};
 use s_imu::{Noisifier, NoisyImuMeasurement, SimIMU};
-use std::io::Write;
-use std::{thread::sleep_ms, time::Instant};
+use std::time::Instant;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use viewer::Viewer;
 
-mod common;
 mod ekf;
 mod filter;
 mod s_imu;
 mod viewer;
 
 fn main() {
+    env_logger::init();
     let mut v = Viewer::new("sIMU", 0.1);
 
     let mut stdout = StandardStream::stdout(ColorChoice::Always);
-    //writeln!(&mut stdout, "green text!").unwrap();
 
-    let acc_noise_stddev = 0.1;
+    let sampling_period_ms = 10;
+    let imu_manufacturer_lying_factor = 10.0;
+
     let gyro_noise_density = 0.03;
-    let gyro_sampling_period_ms = 10;
-    let imu_manufacturer_lying_factor = 1.0;
     let gyr_noise_stddev = imu_manufacturer_lying_factor
         * gyro_noise_density
-        * (1000.0 / gyro_sampling_period_ms as f32).sqrt()
+        * (1000.0 / sampling_period_ms as f32).sqrt()
         * std::f32::consts::PI
         / 180.0;
-    let acc_cov = acc_noise_stddev * acc_noise_stddev;
     let gyr_cov = gyr_noise_stddev * gyr_noise_stddev;
+
+    let acc_noise_density = 9.81 * 218e-6;
+    let acc_noise_stddev = acc_noise_density
+        * imu_manufacturer_lying_factor
+        * (1000.0 / sampling_period_ms as f32).sqrt();
+    let acc_cov = acc_noise_stddev * acc_noise_stddev;
+
+    info!(
+        "Accelerometer noise standard deviation: {}",
+        acc_noise_stddev
+    );
+    info!("Gyroscope noise standard deviation: {}", gyr_noise_stddev);
 
     let mut gt_filter = NaiveIntegrationFilter::new();
     let mut naive_filter = NaiveIntegrationFilter::new();
@@ -80,7 +90,7 @@ fn main() {
         for m in meas {
             match m {
                 NoisyImuMeasurement::Accelerometer(a, an) => {
-                    let a_perfect = gt_filter.state().0.transform_vector(&a.a);
+                    let a_perfect = gt_filter.state().transform_vector(&a.a);
                     let a_noisy = a_perfect + an;
                     ekf.process_acc(&a_noisy, a.dt);
                 }
@@ -92,13 +102,11 @@ fn main() {
 
                     running_avg_naive = (1.0 - alpha) * running_avg_naive
                         + alpha
-                            * (gt_filter.state().0.as_vector()
-                                - naive_filter.state().0.as_vector())
-                            .norm();
+                            * (gt_filter.state().as_vector() - naive_filter.state().as_vector())
+                                .norm();
 
                     running_avg_ekf = (1.0 - alpha) * running_avg_ekf
-                        + alpha
-                            * (gt_filter.state().0.as_vector() - ekf.state().0.as_vector()).norm();
+                        + alpha * (gt_filter.state().as_vector() - ekf.state().as_vector()).norm();
                 }
             }
         }
@@ -132,5 +140,3 @@ fn main() {
         }
     }
 }
-
-// q_w_n

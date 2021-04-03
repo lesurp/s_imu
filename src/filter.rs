@@ -1,15 +1,13 @@
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 
-use crate::common::{Local, World, Q};
-
 pub trait Filter {
     fn process_gyro(&mut self, w: &Vector3<f32>, dt: i64);
     fn process_acc(&mut self, a: &Vector3<f32>, dt: i64);
-    fn state(&self) -> Q<World, Local>;
+    fn state(&self) -> UnitQuaternion<f32>;
 }
 
 pub struct NaiveIntegrationFilter {
-    q: Q<World, Local>,
+    q: UnitQuaternion<f32>,
 }
 
 impl Filter for NaiveIntegrationFilter {
@@ -23,18 +21,20 @@ impl Filter for NaiveIntegrationFilter {
             let s = norm_alpha.sin();
             (c, s * alpha.x, s * alpha.y, s * alpha.z)
         };
-        self.q *= Q::from(UnitQuaternion::from_quaternion(Quaternion::new(w, x, y, z)));
+        self.q *= UnitQuaternion::from_quaternion(Quaternion::new(w, x, y, z));
     }
 
     fn process_acc(&mut self, _a: &Vector3<f32>, _dt: i64) {}
 
-    fn state(&self) -> Q<World, Local> {
+    fn state(&self) -> UnitQuaternion<f32> {
         self.q
     }
 }
 
 impl NaiveIntegrationFilter {
     pub fn new() -> Self {
-        NaiveIntegrationFilter { q: Q::new() }
+        NaiveIntegrationFilter {
+            q: UnitQuaternion::identity(),
+        }
     }
 }

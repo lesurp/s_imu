@@ -22,7 +22,7 @@ impl Viewer {
     pub const CYLINDER_RADIUS: f32 = 0.1;
     pub const CYLINDER_LENGTH: f32 = 10.0;
     pub fn new(name: &str, scale: f32) -> Viewer {
-        let mut w = Window::new(name);
+        let w = Window::new(name);
 
         let mut camera = FirstPerson::new(Point3::new(1.0, 4.0, 2.0), Point3::new(0.0, 0.0, 0.0));
         camera.set_up_axis_dir(Vector3::z_axis());
@@ -39,7 +39,7 @@ impl Viewer {
         self.filter_nodes
             .get_mut(&h)
             .unwrap()
-            .set_local_rotation(f.state().0);
+            .set_local_rotation(f.state());
     }
 
     pub fn add_filter(
