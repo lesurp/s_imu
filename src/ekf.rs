@@ -1,7 +1,5 @@
 use log::{debug, warn};
-use nalgebra::{
-    Cholesky, Matrix3, Matrix3x4, Matrix4, Quaternion, UnitQuaternion, Vector3, Vector4,
-};
+use nalgebra::{Matrix3, Matrix3x4, Matrix4, Quaternion, UnitQuaternion, Vector3, Vector4, QR};
 
 use crate::filter::Filter;
 
@@ -22,57 +20,76 @@ impl Ekf {
 
 impl Filter for Ekf {
     fn process_gyro(&mut self, w: &Vector3<f32>, dt: i64) {
+        let x_vec = Vector4::new(self.x.w, self.x.i, self.x.j, self.x.k);
+        let f = Ekf::f(&w, dt);
+        let x_hat = f * x_vec;
+
         debug!("EKF predict");
         debug!("Gyroscope values:\t{}", w.transpose());
         debug!("dt:\t\t\t{}", dt);
-        let x_vec = Vector4::new(self.x.w, self.x.i, self.x.j, self.x.k);
-        let f = Ekf::f(&w, dt);
         debug!("f:\t\t\t{}", f);
-        let x_hat = f * x_vec;
         debug!("x_n-1_n-1:\t\t\t{}", x_hat);
+        debug!("P_n-1_n-1:\t\t\t{}", self.p);
+
         self.x =
             UnitQuaternion::from_quaternion(Quaternion::new(x_hat.x, x_hat.y, x_hat.z, x_hat.w));
+        self.p = f * self.p * f.transpose() + self.q;
+
         debug!("x_n_n-1:\t\t\t{}", x_hat);
-        debug!("p:\t\t\t{}", self.p);
-        self.p = f * self.p * f.transpose() + 10.0 * self.q;
         debug!("P_n_n-1:\t\t\t{}", self.p);
-        debug!("norm(P_n_n-1):\t\t\t{}", self.p.norm());
     }
 
     #[allow(clippy::many_single_char_names)]
     fn process_acc(&mut self, a: &Vector3<f32>, _dt: i64) {
-        debug!("EKF correct");
-        let z = 9.81 * a.normalize();
-        debug!("z:\t\t\t{}", z);
-        let z_est = self.x.transform_vector(&Vector3::new(0.0, 0.0, 9.81));
-        debug!("H(x_n-n-1):\t\t\t{}", z_est);
-        let y = z - z_est;
-        debug!("y:\t\t\t{}", y);
+        let z = 9.81 * a.normalize(); // TODO: idiotic way of getting gravity from acc: this should be another module's responsability!
+        let hx = self.x * Vector3::new(0.0, 0.0, 9.81);
+        let y = z - hx;
         let dh_dx = Ekf::dqaqc_dq(&self.x, &Vector3::new(0.0, 0.0, 9.81));
-        debug!("dh_dx:\t\t{}", dh_dx);
+
         let s = dh_dx * self.p * dh_dx.transpose() + self.r;
+
+        debug!("EKF correct");
+        debug!("x_n-n-1:\t\t\t{}", self.x);
+        debug!("z:\t\t\t{}", z);
+        debug!("H(x_n-n-1):\t\t\t{}", hx);
+        debug!("y:\t\t\t{}", y);
+        debug!("dh_dx:\t\t{}", dh_dx);
         debug!("s:\t\t\t{}", s);
-        let s_inv = match Cholesky::new(s) {
-            Some(c) => c.inverse(),
+        let s_inv = match QR::new(s).try_inverse() {
+            Some(c) => {
+                if c.sum().is_nan() {
+                    warn!("s.inv has NaN inverted!?");
+                    return;
+                } else {
+                    c
+                }
+            }
             None => {
                 warn!("s cannot be inverted!?");
                 return;
             }
         };
-        debug!("s_inv:\t\t\t{}", s_inv);
-        let k = self.p * dh_dx.transpose();
-        debug!("k:\t\t\t{}", k);
+
+        let k = self.p * dh_dx.transpose() * s_inv;
         let correction = k * y;
-        debug!("correction:\t\t\t{}", correction);
+        // we compute p (because of f) and dh_dx with w first
+        // we do NOT usethe .x .y etc accessors to avoid needless confusion: correction[0] is our
+        // quaternion's real part
         let x_prenorm = self.x.quaternion()
-            + Quaternion::new(correction.x, correction.y, correction.z, correction.w);
+            + Quaternion::new(correction[0], correction[1], correction[2], correction[3]);
+
+
+        debug!("s_inv:\t\t\t{}", s_inv);
+        debug!("k:\t\t\t{}", k);
+        debug!("correction:\t\t\t{}", correction);
         debug!("x_n_n-1:\t\t\t{}", self.x);
-        self.x = UnitQuaternion::from_quaternion(x_prenorm);
-        debug!("x_n_n:\t\t\t{}", self.x);
         debug!("P_n_n-1:\t\t\t{}", self.p);
+
+        self.x = UnitQuaternion::from_quaternion(x_prenorm);
         self.p = (Matrix4::identity() - k * dh_dx) * self.p;
+
+        debug!("x_n_n:\t\t\t{}", self.x);
         debug!("P_n_n:\t\t\t{}", self.p);
-        debug!("norm(P_n_n):\t\t\t{}", self.p.norm());
     }
 
     fn state(&self) -> UnitQuaternion<f32> {
@@ -138,5 +155,76 @@ impl Ekf {
         f[(3, 2)] = -x;
 
         f
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use nalgebra::{Matrix4, UnitQuaternion, Vector3};
+
+    use crate::filter::Filter;
+
+    use super::Ekf;
+    fn ekf() -> Ekf {
+        Ekf::new(UnitQuaternion::identity(), Matrix4::zeros(), 1e-1, 1e-1)
+    }
+
+    #[test]
+    fn test_p_increase() {
+        let mut ekf = ekf();
+        let mut prev_p = ekf.p();
+        for _ in 0..10 {
+            ekf.process_gyro(&Vector3::zeros(), 1);
+            let p = ekf.p();
+            assert!(prev_p.norm() < p.norm());
+            prev_p = p;
+        }
+    }
+
+    #[test]
+    fn test_p_decrease() {
+        let mut ekf = ekf();
+        for _ in 0..10 {
+            ekf.process_gyro(&Vector3::zeros(), 1);
+            let prev_p = ekf.p();
+            ekf.process_acc(&Vector3::x(), 1);
+            let p = ekf.p();
+            assert!(prev_p.norm() > p.norm());
+        }
+    }
+
+    #[test]
+    fn test_predict() {
+        let mut ekf = ekf();
+        ekf.x = UnitQuaternion::new(Vector3::new(0.0, std::f32::consts::FRAC_PI_2, 0.0));
+
+        // increase p artificially
+        for _ in 0..10 {
+            ekf.process_gyro(&Vector3::zeros(), 1);
+        }
+
+        let g = Vector3::new(0.0, 0.0, 9.81);
+        for _ in 0..100 {
+            ekf.process_acc(&g, 1);
+        }
+
+        let err = ekf.x.angle_to(&UnitQuaternion::identity());
+        assert!(err < 1e-5);
+    }
+
+    #[test]
+    fn test_correct() {
+        let mut ekf = ekf();
+
+        for _ in 0..100 {
+            ekf.process_gyro(&Vector3::new(0.0, std::f32::consts::FRAC_PI_2, 0.0), 10_000);
+        }
+
+        let err = ekf.x.angle_to(&UnitQuaternion::new(Vector3::new(
+            0.0,
+            std::f32::consts::FRAC_PI_2,
+            0.0,
+        )));
+        assert!(err < 1e-4);
     }
 }

@@ -19,13 +19,14 @@ fn main() {
 
     let mut stdout = StandardStream::stdout(ColorChoice::Always);
 
-    let sampling_period_ms = 10;
+    let acc_sampling_period_us = 5000;
+    let gyr_sampling_period_us = 10000;
     let imu_manufacturer_lying_factor = 10.0;
 
     let gyro_noise_density = 0.03;
     let gyr_noise_stddev = imu_manufacturer_lying_factor
         * gyro_noise_density
-        * (1000.0 / sampling_period_ms as f32).sqrt()
+        * (1e6 / gyr_sampling_period_us as f32).sqrt()
         * std::f32::consts::PI
         / 180.0;
     let gyr_cov = gyr_noise_stddev * gyr_noise_stddev;
@@ -33,7 +34,7 @@ fn main() {
     let acc_noise_density = 9.81 * 218e-6;
     let acc_noise_stddev = acc_noise_density
         * imu_manufacturer_lying_factor
-        * (1000.0 / sampling_period_ms as f32).sqrt();
+        * (1e6 / acc_sampling_period_us as f32).sqrt();
     let acc_cov = acc_noise_stddev * acc_noise_stddev;
 
     info!(
@@ -71,7 +72,7 @@ fn main() {
     );
     let _orig = v.add_filter(Vector3::zeros(), 1.0, 1.0, 1.0);
 
-    let mut simu = SimIMU::new(10000, 10000);
+    let mut simu = SimIMU::new(acc_sampling_period_us, gyr_sampling_period_us);
     let mut noisifier = Noisifier::new();
     let mut time = Instant::now();
     let alpha = 0.50;
